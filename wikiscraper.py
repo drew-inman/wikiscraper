@@ -1,13 +1,8 @@
 import wikipedia
 import requests
 from bs4 import BeautifulSoup
-import re
-import os
-from PIL import Image
-from io import BytesIO
-import sys
 
-def get_wikipedia_page_url(query: str) -> str:
+def search_wikipedia_album(query):
     try:
         page = wikipedia.page(query)
         return page.url
@@ -18,118 +13,92 @@ def get_wikipedia_page_url(query: str) -> str:
     except Exception as e:
         return f"An error occurred: {str(e)}"
 
-def scrape_wikipedia_infobox_and_intro(url: str) -> dict:
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
 
-        infobox = soup.find('table', {'class': 'infobox'})
-        result = {"artist": None, "album": None, "year": None, "genres": None, "intro": None, "image_url": None}
+def get_wikipedia_page_content(page_url):
+    response = requests.get(page_url)
+    if response.status_code == 200:
+        return BeautifulSoup(response.text, 'html.parser')
+    else:
+        return None
 
-        if infobox:
-            image_tag = infobox.find('img')
-            if image_tag and image_tag.get('src'):
-                thumbnail_url = image_tag['src']
-                full_image_url = re.sub(r'/thumb/(.*?)/(\d+px-.*?)$', r'/\1', thumbnail_url)
-                result["image_url"] = f"https:{full_image_url}"
 
-            for row in infobox.find_all('tr'):
-                header = row.find('th')
-                data = row.find('td')
+def extract_album_metadata(soup):
+    metadata = {}
 
-                if header:
-                    if "album" in header.get("class", []) or "summary" in header.get("class", []):
-                        result["album"] = header.get_text(strip=True)
-                        continue
+    # Extract infobox
+    infobox = soup.find('table', class_='infobox')
+    if not infobox:
+        return None  # No infobox found
 
-                if header and data:
-                    header_text = header.get_text(strip=True).lower()
-                    data_text = data.get_text(strip=True)
+    # Album name (header)
+    metadata['album_name'] = infobox.find('th', class_='infobox-above summary album').text.strip()
 
-                    if "artist" in header_text or "performer" in header_text:
-                        result["artist"] = data_text
-                    elif "album" in header_text or "title" in header_text:
-                        result["album"] = data_text
-                    elif "released" in header_text or "year" in header_text:
-                        result["year"] = data_text.split('(')[0].strip()
-                    elif "genre" in header_text:
-                        result["genres"] = extract_genres_from_infobox(data)
-        else:
-            print("No infobox found on the page.")
-
-        return result
-    except Exception as e:
-        print(f"An error occurred while scraping: {str(e)}")
-        return {"error": f"An error occurred while scraping: {str(e)}"}
-
-def extract_genres_from_infobox(data) -> str:
-    genres = [li.get_text(strip=True) for li in data.find_all('li')] if data else []
-    return ", ".join(genres) if genres else "No genres listed."
-
-def download_image(image_url: str, filename: str) -> str:
-    try:
-        response = requests.get(image_url)
-        response.raise_for_status()
+    # Iterate over rows to find key info
+    for row in infobox.find_all('tr'):
+        header = row.find('th', class_='infobox-label')
+        value = row.find('td', class_='infobox-data')
         
-        # Save the image to the same directory as the script
-        image_path = os.path.join(os.getcwd(), filename)
-        with open(image_path, 'wb') as file:
-            file.write(response.content)
-        
-        print(f"Image successfully downloaded to {image_path}")
-        
-        # Display the image
-        image = Image.open(BytesIO(response.content))
-        image.show()
-        
-        return image_path
-    except Exception as e:
-        print(f"Failed to download image: {str(e)}")
-        return ""
+        if not header or not value:
+            continue
 
-def wikipedia_search_loop():
-    while True:
-        user_query = input("Enter text: (or 'QUIT_NOW' to quit): ").strip()
-        if user_query.lower() == "QUIT_NOW":
-            print("Bye!")
-            break
-        elif user_query.lower() == "REBOOT_NOW":
-            print("Rebooting the script...")
-            os.execv(sys.executable, ['python'] + sys.argv)
+        key = header.text.strip().lower()
+        if "artist" in key:
+            metadata['artist_name'] = value.text.strip()
+        elif "genre" in key:
+            metadata['genres'] = [g.text.strip() for g in value.find_all('a')]
+        elif "released" in key:
+            metadata['release_date'] = value.text.strip()
+        elif "cover" in key or "image" in key:
+            image = value.find('img')
+            if image:
+                metadata['album_art_url'] = "https:" + image['src']
 
-        url = get_wikipedia_page_url(user_query)
-        print(f"\nURL: {url}\n=================================")
+    return metadata
 
-        if url.startswith("http"):
-            result = scrape_wikipedia_infobox_and_intro(url)
-            if "error" in result:
-                print(result["error"])
-            else:
-                artist = result['artist'].title() if result['artist'] else "N/A"
-                raw_year = re.sub(r'\[\d+\]', '', result['year'] or "")
-                year_match = re.search(r'\b(\d{4})\b', raw_year)
-                year = year_match.group(1) if year_match else "N/A"
 
-                cleaned_genres = re.sub(r'\[\d+\]', '', result['genres'] or "")
-                genres = "/".join(genre.strip().title() for genre in cleaned_genres.split(',')) if cleaned_genres else "N/A"
+def extract_tracklist(soup):
+    tracklist = []
 
-                labels = ["Artist", "Album", "Year", "Genres", "Image URL"]
-                max_label_length = max(len(label) for label in labels)
-                print(f"{'Artist:'.ljust(max_label_length + 7)} {artist}")
-                print(f"{'Album:'.ljust(max_label_length + 7)} {result['album']}")
-                print(f"{'Year:'.ljust(max_label_length + 7)} {year}")
-                print(f"{'Genres:'.ljust(max_label_length + 7)} {genres}")
-                print(f"{'Image URL:'.ljust(max_label_length + 7)} {result['image_url'] or 'N/A'}")
+    # Look for the "Track listing" section header
+    track_section = soup.find('span', {'id': 'Track_listing'})
+    if not track_section:
+        return tracklist
 
-                if result['image_url']:
-                    image_filename = f"{user_query.replace(' ', '_')}.jpg"
-                    download_image(result['image_url'], image_filename)
-        else:
-            print("Invalid URL returned:", url)
+    # The tracklist table usually follows the header
+    table = track_section.find_next('table', class_='tracklist')
+    if not table:
+        return tracklist
 
-        print("\n")
+    # Extract track names
+    for row in table.find_all('tr'):
+        cells = row.find_all('td')
+        if cells:
+            track_name = cells[0].text.strip()  # First column usually has the track name
+            tracklist.append(track_name)
 
-        
-print("For best results: '{album name} album' or '{album name} {artist name} album'")
-wikipedia_search_loop()
+    return tracklist
+
+
+def get_album_metadata(query):
+    # Search and fetch page
+    page_url = search_wikipedia_album(query)
+    if not page_url:
+        return {"error": "Album page not found on Wikipedia"}
+
+    soup = get_wikipedia_page_content(page_url)
+    if not soup:
+        return {"error": "Failed to retrieve Wikipedia page content"}
+
+    # Extract metadata and tracklist
+    metadata = extract_album_metadata(soup)
+    if not metadata:
+        return {"error": "Failed to extract album metadata"}
+
+    metadata['tracklist'] = extract_tracklist(soup)
+
+    return metadata
+
+
+# Example usage
+album_data = get_album_metadata("Eighteen Visions album")
+print(album_data)
